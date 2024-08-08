@@ -27,6 +27,46 @@ function Write(tree::TTree)
 end
 
 """
+    _getTypeCharacter(julia_type::DataType)
+
+Returns the TTree type code for the input Julia data type
+
+# Arguments
+- `julia_type::DataType`: The Julia type for which TTree type code is required.
+"""
+function _getTypeCharacter(julia_type::DataType)
+    if julia_type == String
+        return "C"
+    elseif julia_type == Int8
+        return "B"
+    elseif julia_type == UInt8
+        return "b"
+    elseif julia_type == Int16
+        return "S"
+    elseif julia_type == UInt16
+        return "s"
+    elseif julia_type == Int32
+        return "I"
+    elseif julia_type == UInt32
+        return "i"
+    elseif julia_type == Float32
+        return "F"
+    # elseif julia_type == ROOT.Half32
+    #     return "f"
+    elseif julia_type == Float64
+        return "D"
+    # elseif julia_type == ROOT.Double32
+    #     return "d"
+    elseif julia_type == Int64
+        return "L"
+    elseif julia_type == UInt64
+        return "l"
+    elseif julia_type == Bool
+        return "O"
+    end
+end
+
+"""
     _makeTTree(file::CxxWrap.CxxWrapCore.CxxPtr{ROOT.TFile}, name::String, title::String, branch_types, branch_names)
 
 Creates a ROOT TTree with specified branches.
@@ -45,7 +85,20 @@ function _makeTTree(file::CxxWrap.CxxWrapCore.CxxPtr{ROOT.TFile}, name::String, 
     tree = ROOT.TTree(name, title)
     current_branches = []
     for i in eachindex(branch_types)
-        if branch_types[i] <: CxxWrap.StdVector
+        if isa(branch_types[i], Tuple)
+            type_char = _getTypeCharacter(branch_types[i][1])
+            if isa(branch_types[i][2], DataType)
+                # Variable size array
+                array_size_branch = ROOT.Branch(tree, string(branch_types[i][3]), Ref(one(branch_types[i][2])), 100, 99)
+                push!(current_branches, array_size_branch)
+                curr_branch = ROOT.Branch(tree, string(branch_names[i]), Ptr{Nothing}(), "$(branch_names[i])[$(string(branch_types[i][3]))]/$(type_char)")
+                push!(current_branches, curr_branch)
+            else
+                # Fixed size array, size not required
+                curr_branch = ROOT.Branch(tree, string(branch_names[i]), Ptr{Nothing}(), "$(branch_names[i])[$(branch_types[i][2])]/$(type_char)")
+                push!(current_branches, curr_branch)
+            end
+        elseif branch_types[i] <: CxxWrap.StdVector
             ptr = (branch_types[i])()
             curr_branch = ROOT.Branch(tree, string(branch_names[i]), ptr, 100, 99)
             push!(current_branches, curr_branch)
@@ -141,9 +194,17 @@ function TTree(file::CxxWrap.CxxWrapCore.CxxPtr{ROOT.TFile}, name::String, title
             push!(branch_names, key)
             if isa(value, Tuple)
                 if isa(value[1], Array)
-                    push!(branch_types, (eletype(value[1]), kwargs[value[2]]))
+                    if isa(kwargs[value[2]], DataType) 
+                        push!(branch_types, (eletype(value[1]), kwargs[value[2]], value[2]))
+                    else
+                        push!(branch_types, (eletype(value[1]), kwargs[value[2]]))
+                    end
                 else
-                    push!(branch_types, (value[1], kwargs[value[2]]))
+                    if isa(kwargs[value[2]], DataType) 
+                        push!(branch_types, (value[1], kwargs[value[2]], value[2]))
+                    else
+                        push!(branch_types, (value[1], kwargs[value[2]]))
+                    end
                 end
             else
                 if isa(value, Array)
@@ -183,7 +244,9 @@ function Fill(tree::TTree, data)
         end
         GC.@preserve row begin
             for i in eachindex(tree._branch_array)
-                if isa(row[i], CxxWrap.StdVector)  
+                if isa(row[i], Array)
+                    ROOT.SetAddress(tree._branch_array[i], convert(Ptr{Nothing}, pointer(row[i])))
+                elseif isa(row[i], CxxWrap.StdVector)  
                     ROOT.SetObject(tree._branch_array[i], row[i])
                 elseif isa(row[i], String)
                     ROOT.SetAddress(tree._branch_array[i], convert(Ptr{Nothing}, pointer(row[i])))
